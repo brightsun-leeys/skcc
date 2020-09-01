@@ -4,543 +4,238 @@
 
 # Table of contents
 
-- [screeningReservation (건강검진 예약 서비스)](#---)
-  - [서비스 시나리오](#서비스-시나리오)
-  - [체크포인트](#체크포인트)
-  - [분석/설계](#분석설계)
-  - [구현:](#구현-)
-    - [DDD 의 적용](#ddd-의-적용)
-    - [폴리글랏 퍼시스턴스](#폴리글랏-퍼시스턴스)
-    - [폴리글랏 프로그래밍](#폴리글랏-프로그래밍)
-    - [동기식 호출 과 Fallback 처리](#동기식-호출-과-Fallback-처리)
-    - [비동기식 호출 과 Eventual Consistency](#비동기식-호출-과-Eventual-Consistency)
-  - [운영](#운영)
-    - [CI/CD 설정](#cicd설정)
-    - [동기식 호출 / 서킷 브레이킹 / 장애격리](#동기식-호출-서킷-브레이킹-장애격리)
-    - [오토스케일 아웃](#오토스케일-아웃)
-    - [무정지 재배포](#무정지-재배포)
-  - [신규 개발 조직의 추가](#신규-개발-조직의-추가)
+- [서비스 시나리오](#서비스-시나리오)
+  - [시나리오 테스트결과](#시나리오-테스트결과)
+- [분석/설계](#분석설계)
+- [구현](#구현)
+  - [DDD 의 적용](#ddd-의-적용)
+  - [Gateway 적용](#Gateway-적용)
+  - [폴리글랏 퍼시스턴스](#폴리글랏-퍼시스턴스)
+  - [동기식 호출 과 Fallback 처리](#동기식-호출-과-Fallback-처리)
+  - [비동기식 호출 과 Eventual Consistency](#비동기식-호출-과-Eventual-Consistency)
+- [운영](#운영)
+  - [CI/CD 설정](#cicd설정)
+  - [서킷 브레이킹 / 장애격리](#서킷-브레이킹-/-장애격리)
+  - [오토스케일 아웃](#오토스케일-아웃)
+  - [무정지 재배포](#무정지-재배포)
+  
 
 # 서비스 시나리오
 
-병원은 예약 가능 정보 (예약일, 검진 가능 인원) 을 등록하며, 고객은 본인이 원하는 날짜에 검진 예약을 할 수 있도록 한다.
+기능적 요구사항
+1. 관리자가 병원 정보( 병원이름, 예약일, 가능인원수)를 등록한다.
+1. 고객이 건강검진을 예약을 요청한다. (Sync)
+1. 고객의 검진 요청에 따라서 해당 병원의 검진가능 인원이 감소한다. (Sync) 
+1. 고객의 건강검진 예약 상태가 예약 완료로 변경된다. (Sync) 
+1. 고객의 검진 예약 완료에 따라서 예약관리의 해당 내역의 상태가 등록된다.
+1. 고객이 건강검진 예약을 취소한다.
+1. 고객의 예약 취소에 따라서 병원의 검진가능 인원이 증가한다. (Async)
+1. 고객의 예약 취소에 따라서 예약관리의 해당 내역의 상태가 예약 취소로 변경된다.
+1. 관리자가 병원 정보를 삭제한다.
+1. 관리자의 병원 정보 삭제에 따라서 해당 병원에 예약한 예약자의 상태를 변경한다.
+1. 관리자의 병원 정보 삭제에 따라서 예약관리의 해당 내역의 상태가 예약 강제 취소로 변경된다.
+1. 사용자가 건강검진 예약내역 상태를 조회한다.
 
-[ 기능적 요구사항 ]
-1. 관리자가 병원 정보( 병원아이디, 예약일, 가능인원수)를 등록한다.
-1. 고객은 예약이 가능한 병원 정보를 확인한다.
-1. 고객은 특정 날짜 / 특정 병원에 검진을 예약한다.
-    1. 고객의 예약에 따라서 해당 날짜 / 병원의 검진가능 인원이 감소한다.
-    1. 고객의 예약에 따라서 예약 정보가 생성 된다.
-1. 고객은 본인의 검진 정보를 확인할 수 있다.
-1. 고객은 본인의 검진을 취소할 수 있다.
-    1. 고객의 취소에 따라서 해당 날짜 / 병원의 검진가능 인원이 증가한다.
-    1. 고객의 취소에 따라서 예약 정보가 삭제 된다.
-1. 관리자는 전체 예약 정보를 조회할 수 있다.
-1. 관리자는 특정 검진 예약을 확정한다.
-1. 관리자는 특정 검진 예약을 강제로 취소할 수 있다. (Req/Res 테스트를 위해 임의로 동기처리) 
-
-[ 비기능적 요구사항 ]
+비기능적 요구사항
 1. 트랜잭션
-    1. 고객의 예약에 따라서 해당 날짜 / 병원의 검진가능 인원이 감소한다.
-    1. 고객의 취소에 따라서 해당 날짜 / 병원의 검진가능 인원이 증가한다.
+    1. 고객의 예약에 따라서 해당 날짜 / 병원의 검진가능 인원이 감소한다. > Sync
+    1. 고객의 취소에 따라서 해당 날짜 / 병원의 검진가능 인원이 증가한다. > Async
 1. 장애격리
-    1. 병원등록 서비스에 장애가 발생하더라도 검진 예약은 정상적으로 처리 가능하다.
-
+    1. 예약 관리 서비스에 장애가 발생하더라도 검진 예약은 정상적으로 처리 가능하다.  > Async (event-driven)
+    1. 서킷 브레이킹 프레임워크의 선택: istio-injection + DestinationRule
 1. 성능
-    1. 고객은 본인의 예약 상태 및 이력 정보를 확인할 수 있다.(CQRS)
+    1. 고객은 본인의 예약 상태 및 이력 정보를 확인할 수 있다. > CQRS
 
 
+##시나리오 테스트결과
 
-# 체크포인트
-
-- 분석 설계
-
-
-  - 이벤트스토밍: 
-    - 스티커 색상별 객체의 의미를 제대로 이해하여 헥사고날 아키텍처와의 연계 설계에 적절히 반영하고 있는가?
-    - 각 도메인 이벤트가 의미있는 수준으로 정의되었는가?
-    - 어그리게잇: Command와 Event 들을 ACID 트랜잭션 단위의 Aggregate 로 제대로 묶었는가?
-    - 기능적 요구사항과 비기능적 요구사항을 누락 없이 반영하였는가?    
-
-  - 서브 도메인, 바운디드 컨텍스트 분리
-    - 팀별 KPI 와 관심사, 상이한 배포주기 등에 따른  Sub-domain 이나 Bounded Context 를 적절히 분리하였고 그 분리 기준의 합리성이 충분히 설명되는가?
-      - 적어도 3개 이상 서비스 분리
-    - 폴리글랏 설계: 각 마이크로 서비스들의 구현 목표와 기능 특성에 따른 각자의 기술 Stack 과 저장소 구조를 다양하게 채택하여 설계하였는가?
-    - 서비스 시나리오 중 ACID 트랜잭션이 크리티컬한 Use 케이스에 대하여 무리하게 서비스가 과다하게 조밀히 분리되지 않았는가?
-  - 컨텍스트 매핑 / 이벤트 드리븐 아키텍처 
-    - 업무 중요성과  도메인간 서열을 구분할 수 있는가? (Core, Supporting, General Domain)
-    - Request-Response 방식과 이벤트 드리븐 방식을 구분하여 설계할 수 있는가?
-    - 장애격리: 서포팅 서비스를 제거 하여도 기존 서비스에 영향이 없도록 설계하였는가?
-    - 신규 서비스를 추가 하였을때 기존 서비스의 데이터베이스에 영향이 없도록 설계(열려있는 아키택처)할 수 있는가?
-    - 이벤트와 폴리시를 연결하기 위한 Correlation-key 연결을 제대로 설계하였는가?
-
-  - 헥사고날 아키텍처
-    - 설계 결과에 따른 헥사고날 아키텍처 다이어그램을 제대로 그렸는가?
-    
-- 구현
-  - [DDD] 분석단계에서의 스티커별 색상과 헥사고날 아키텍처에 따라 구현체가 매핑되게 개발되었는가?
-    - Entity Pattern 과 Repository Pattern 을 적용하여 JPA 를 통하여 데이터 접근 어댑터를 개발하였는가
-    - [헥사고날 아키텍처] REST Inbound adaptor 이외에 gRPC 등의 Inbound Adaptor 를 추가함에 있어서 도메인 모델의 손상을 주지 않고 새로운 프로토콜에 기존 구현체를 적응시킬 수 있는가?
-    - 분석단계에서의 유비쿼터스 랭귀지 (업무현장에서 쓰는 용어) 를 사용하여 소스코드가 서술되었는가?
-  - Request-Response 방식의 서비스 중심 아키텍처 구현
-    - 마이크로 서비스간 Request-Response 호출에 있어 대상 서비스를 어떠한 방식으로 찾아서 호출 하였는가? (Service Discovery, REST, FeignClient)
-    - 서킷브레이커를 통하여  장애를 격리시킬 수 있는가?
-  - 이벤트 드리븐 아키텍처의 구현
-    - 카프카를 이용하여 PubSub 으로 하나 이상의 서비스가 연동되었는가?
-    - Correlation-key:  각 이벤트 건 (메시지)가 어떠한 폴리시를 처리할때 어떤 건에 연결된 처리건인지를 구별하기 위한 Correlation-key 연결을 제대로 구현 하였는가?
-    - Message Consumer 마이크로서비스가 장애상황에서 수신받지 못했던 기존 이벤트들을 다시 수신받아 처리하는가?
-    - Scaling-out: Message Consumer 마이크로서비스의 Replica 를 추가했을때 중복없이 이벤트를 수신할 수 있는가
-    - CQRS: Materialized View 를 구현하여, 타 마이크로서비스의 데이터 원본에 접근없이(Composite 서비스나 조인SQL 등 없이) 도 내 서비스의 화면 구성과 잦은 조회가 가능한가?
-
-  - 폴리글랏 플로그래밍
-    - 각 마이크로 서비스들이 하나이상의 각자의 기술 Stack 으로 구성되었는가?
-    - 각 마이크로 서비스들이 각자의 저장소 구조를 자율적으로 채택하고 각자의 저장소 유형 (RDB, NoSQL, File System 등)을 선택하여 구현하였는가?
-  - API 게이트웨이
-    - API GW를 통하여 마이크로 서비스들의 집입점을 통일할 수 있는가?
-    - 게이트웨이와 인증서버(OAuth), JWT 토큰 인증을 통하여 마이크로서비스들을 보호할 수 있는가?
-- 운영
-  - SLA 준수
-    - 셀프힐링: Liveness Probe 를 통하여 어떠한 서비스의 health 상태가 지속적으로 저하됨에 따라 어떠한 임계치에서 pod 가 재생되는 것을 증명할 수 있는가?
-    - 서킷브레이커, 레이트리밋 등을 통한 장애격리와 성능효율을 높힐 수 있는가?
-    - 오토스케일러 (HPA) 를 설정하여 확장적 운영이 가능한가?
-    - 모니터링, 앨럿팅: 
-  - 무정지 운영 CI/CD (10)
-    - Readiness Probe 의 설정과 Rolling update을 통하여 신규 버전이 완전히 서비스를 받을 수 있는 상태일때 신규버전의 서비스로 전환됨을 siege 등으로 증명 
-    - Contract Test :  자동화된 경계 테스트를 통하여 구현 오류나 API 계약위반를 미리 차단 가능한가?
-    - 
-
+| 기능 | 이벤트 Payload |
+|---|:---:|
+| 관리자가 콘서트를 등록한다. | ![image](https://user-images.githubusercontent.com/62231786/85086806-aa099200-b216-11ea-8ca4-50eb47c3b02b.JPG) |
+| 사용자가 회원가입을 한다. | ![image](https://user-images.githubusercontent.com/62231786/85086808-aa099200-b216-11ea-895e-3a7dcfeb4b71.JPG) |
+| 사용자가 콘서트를 예약한다.</br>예약 시, 결제가 요청된다. | ![image](https://user-images.githubusercontent.com/62231786/85086809-aaa22880-b216-11ea-9d5c-fcf88fbd2a27.JPG) |
+| 사용자가 예약한 콘서트를 결제한다.</br>결제가 완료되면 콘서트예약이 승인된다.</br>콘서트예약이 승인되면 티켓 수가 변경된다. (감소)| ![image](https://user-images.githubusercontent.com/62231786/85086811-aaa22880-b216-11ea-96aa-5ec29cd8a5d6.JPG) | 
+| 사용자가 예약 취소를 하면 결제가 취소된다.</br>결제가 취소되면 티켓 수가 변경된다. (증가) | ![image](https://user-images.githubusercontent.com/62231786/85086805-a8d86500-b216-11ea-900a-be7c1555e61d.JPG) |
+| 사용자가 콘서트 예약내역 상태를 조회한다. | [{"id":1,"bookingId":6659,"concertId":1,"userId":1,"status":"BookingRequested"},</br> {"id":2,"bookingId":6660,"concertId":3,"userId":1,"status":"PaymentCanceled"}] |
 
 # 분석/설계
 
-
-## AS-IS 조직 (Horizontally-Aligned)
-![image](https://user-images.githubusercontent.com/56263370/87296744-32433480-c542-11ea-9683-6b792f12cf55.png)  
-
-## TO-BE 조직 (Vertically-Aligned)
-![image](https://user-images.githubusercontent.com/56263370/87296805-4d15a900-c542-11ea-8fc2-15640ee62906.png)
-
-
 ## Event Storming 결과
-* MSAEz 로 모델링한 이벤트스토밍 결과:  
-  - http://msaez.io/#/storming/tumGnckjgrc4UVXq2EBT4EFYhnT2/mine/c03f2bb6625a2ed5bef6fcf78dde4b26/-MC01LpwJ3zz9a4MgvCj
 
-### 이벤트 도출
-![image](https://user-images.githubusercontent.com/56263370/87490118-ce268a80-c67f-11ea-9e0f-28725998ecf4.png)
+	<img src="https://user-images.githubusercontent.com/62231786/85047444-ce408100-b1cc-11ea-805f-1c2557c986c5.png"/>
 
-
-### 부적격 이벤트 탈락
-![image](https://user-images.githubusercontent.com/56263370/87490154-edbdb300-c67f-11ea-9923-d08c29203bc7.png)
-
-    - 과정중 도출된 잘못된 도메인 이벤트들을 걸러내는 작업을 수행함
-        - 중복/불필요, 처리 프로세스에 해당하는 이벤트 제거
-
-### 폴리시 부착
-![image](https://user-images.githubusercontent.com/56263370/87490165-f8784800-c67f-11ea-919b-edee122caf1f.png)
-
-
-### 액터, 커맨드 부착하여 읽기 좋게
-![image](https://user-images.githubusercontent.com/56263370/87490182-04fca080-c680-11ea-87e3-829b12b1df15.png)
-
-
-### 어그리게잇으로 묶기
-![image](https://user-images.githubusercontent.com/56263370/87490218-19409d80-c680-11ea-83de-464d8c9e1d47.png)
-
-    -가입신청, 서비스관리센터, 설치 부분을 정의함
-
-### 바운디드 컨텍스트로 묶기
-![image](https://user-images.githubusercontent.com/56263370/87490225-2198d880-c680-11ea-9aaa-1210b8455719.png)
-
-
-    - 도메인 서열 분리 : 가입신청 -> 서비스관리센터 -> 설치 순으로 정의
-       
-
-
-### 폴리시의 이동과 컨텍스트 매핑 (파란색점선은 Pub/Sub, 빨간색실선은 Req/Resp)
-![image](https://user-images.githubusercontent.com/56263370/87490238-2e1d3100-c680-11ea-8d63-9b9626cf0fd4.png)
-
-
-### 완성된 1차 모형
-![image](https://user-images.githubusercontent.com/56263370/87490104-bfd86e80-c67f-11ea-95d9-8d6d41dd1eea.png)
-
-
-    - View Model 추가
-![image](https://user-images.githubusercontent.com/56263370/87490657-2ca03880-c681-11ea-9a88-0161e94cdf71.png)	
-
-### 1차 완성본에 대한 기능적/비기능적 요구사항을 커버하는지 검증
-#### 시나리오 Coverage Check (1)
-![image](https://user-images.githubusercontent.com/56263370/87491137-4a21d200-c682-11ea-9e3e-66540f9c0af8.png)
-
-#### 시나리오 Coverage Check (2)
-![image](https://user-images.githubusercontent.com/56263370/87491151-59088480-c682-11ea-86a6-53df001934d1.png)
-
-#### 비기능 요구사항 coverage
-![image](https://user-images.githubusercontent.com/56263370/87491175-66be0a00-c682-11ea-865f-9ee9e6113ed8.png)
-
+```
+# 도메인 서열
+- Core : Booking
+- Supporting : Concert, User
+- General : Payment
+```
 
 
 ## 헥사고날 아키텍처 다이어그램 도출
-![image](https://user-images.githubusercontent.com/56263370/87491731-e0a2c300-c683-11ea-9c78-ac7beda99da4.png)
+
+* CQRS 를 위한 Mypage 서비스만 DB를 구분하여 적용
+    
+-- 이미지 삽입
 
 
-## 신규 서비스 추가 시 기존 서비스에 영향이 없도록 열린 아키택처 설계
-
-- 신규 개발 조직 추가 시, 기존의 마이크로 서비스에 수정이 발생하지 않도록 Inbund 요청을 REST 가 아닌 Event를 Subscribe 하는 방식으로 구현하였다.
-- 기존 마이크로 서비스에 대하여 아키텍처, 데이터베이스 구조와 관계 없이 추가할 수 있다.
-
-![image](https://user-images.githubusercontent.com/56263370/87504063-b7dcf680-c6a0-11ea-880f-629bbabecf57.png)
-
-### 운영과 Retirement
-
-Request/Response 방식으로 구현하지 않았기 때문에 서비스가 더이상 불필요해져도 Deployment 에서 제거되면 기존 마이크로 서비스에 어떤 영향도 주지 않는다.
-
-* [비교] 설치 (installation) 마이크로서비스의 경우 API 변화나 Retire 시에 서비스 관리센터(ManagementCenter) 마이크로 서비스의 변경을 초래한다.
-
-예) API 변화시
-```
-# ManagementCenter.java (Entity)
-
-    @PostUpdate
-    public void onPostUpdate() {
-            ipTVShopProject.external.Installation installation = new ipTVShopProject.external.Installation();
-
-            installation.setOrderId(this.getOrderId());
-            ManagementCenterApplication.applicationContext.getBean(ipTVShopProject.external.InstallationService.class)
-                    .installationCancellation(installation);
-
-	-------->
-	
-            ManagementCenterApplication.applicationContext.getBean(ipTVShopProject.external.InstallationService.class)
-                    .installationCancellation2222222(installation);
-    }	    
-```
-
-예) Retire 시
-```
-# ManagementCenter.java (Entity)
-
-    @PostUpdate
-    public void onPostUpdate(){
-    /**
-            ipTVShopProject.external.Installation installation = new ipTVShopProject.external.Installation();
-
-            installation.setOrderId(this.getOrderId());
-            ManagementCenterApplication.applicationContext.getBean(ipTVShopProject.external.InstallationService.class)
-                    .installationCancellation(installation);
-
-    **/
-    } 
-```
-
-# 구현:
-분석/설계 단계에서 도출된 헥사고날 아키텍처에 따라, 각 BC별로 대변되는 마이크로 서비스들을 스프링부트로 구현하였다. 구현한 각 서비스를 로컬에서 실행하는 방법은 아래와 같다 (각자의 포트넘버는 8081 ~ 8084 이다)
-
-```
-- Local
-	cd Order
-	mvn spring-boot:run
-
-	cd ManagementCenter
-	mvn spring-boot:run
-
-	cd Installation
-	mvn spring-boot:run
-
-	cd orderstatus
-	mvn spring-boot:run
-
-- EKS : CI/CD 통해 빌드/배포 ("운영 > CI-CD 설정" 부분 참조)
-```
+# 구현
 
 ## DDD 의 적용
 
-- 각 서비스내에 도출된 핵심 Aggregate Root 객체를 Entity 로 선언하였다: Order, ManagementCenter, Installation
-- Installation(설치) 마이크로서비스 예시
+분석/설계 단계에서 도출된 MSA는 총 5개로 아래와 같다.
+* MyPage 는 CQRS 를 위한 서비스
+
+| MSA | 기능 | port | 조회 API |
+|---|:---:|:---:|:---:|
+| Concert | 콘서트 관리 | 8081 | http://localhost:8081/cooncerts |
+| Booking | 예약 관리 | 8082 | http://localhost:8082/bookings |
+| Payment | 결제 관리 | 8083 | http://localhost:8083/payments |
+| User | 사용자 관리 | 8084 | http://localhost:8084/users |
+| MyPage | 콘서트 예약내역 관리 | 8086 | http://localhost:8085/bookingHistories |
+
+
+## Gateway 적용
 
 ```
-	package ipTVShopProject;
-
-	import javax.persistence.*;
-	import org.springframework.beans.BeanUtils;
-	import java.util.List;
-
-	@Entity
-	@Table(name="Installation_table")
-	public class Installation {
-
-		@Id
-		@GeneratedValue(strategy=GenerationType.AUTO)
-		private Long id;
-		private Long engineerId;
-		private String engineerName;
-		private String installReservationDate;
-		private String installCompleteDate;
-		private Long orderId;
-		private String status;
-
-		public Long getId() {
-			return id;
-		}
-
-		public void setId(Long id) {
-			this.id = id;
-		}
-		public Long getEngineerId() {
-			return engineerId;
-		}
-
-		public void setEngineerId(Long engineerId) {
-			this.engineerId = engineerId;
-		}
-		public String getEngineerName() {
-			return engineerName;
-		}
-
-		public void setEngineerName(String engineerName) {
-			this.engineerName = engineerName;
-		}
-		public String getInstallReservationDate() {
-			return installReservationDate;
-		}
-
-		public void setInstallReservationDate(String installReservationDate) {
-			this.installReservationDate = installReservationDate;
-		}
-		public String getInstallCompleteDate() {
-			return installCompleteDate;
-		}
-
-		public void setInstallCompleteDate(String installCompleteDate) {
-			this.installCompleteDate = installCompleteDate;
-		}
-		public Long getOrderId() {
-			return orderId;
-		}
-
-		public void setOrderId(Long orderId) {
-			this.orderId = orderId;
-		}
-		public String getStatus() {
-			return status;
-		}
-
-		public void setStatus(String status) {
-			this.status = status;
-		}
-
-	}
-```
-
-
-
-
-## 폴리글랏 퍼시스턴스
-- order, ManagementCenter, installation 서비스는 H2 적용
-- orderstatus 서비스는 My-SQL DB를 적용을 위해 다음 사항을 수정하여 적용(AWS RDS 적용)
-
-pom.xml dependency 추가
-```
-	<dependency>
-		<groupId>mysql</groupId>
-		<artifactId>mysql-connector-java</artifactId>
-		<scope>runtime</scope>
-	</dependency>
-```
-
-application.yml 파일 수정
-```
-	datasource:
-		url: ${url}
-		username: ${username}
-		password: ${password}
-		driver-class-name: com.mysql.cj.jdbc.Driver
-```
-
-buildspec.yml 파일 수정
-```
-    env:
-      - name: url
-	valueFrom:
-	  configMapKeyRef:
-	    name: iptv
-	    key: urlstatus 
-      - name: username
-	valueFrom:
-	  secretKeyRef:
-	    name: iptv
-	    key: username          
-      - name: password
-	valueFrom:
-	  secretKeyRef:
-	    name: iptv
-	    key: password    
-```
-
-## 동기식 호출 과 Fallback 처리
-
-- 분석 단계에서의 조건 중 하나로 서비스 관리센터(ManagementCenter)에서 인터넷 가입신청 취소를 요청 받으면, 
-설치(installation) 서비스 취소 처리하는 부분을 동기식 호출하는 트랜잭션으로 처리하기로 하였다. 
-- 호출 프로토콜은 이미 앞서 Rest Repository 에 의해 노출되어 있는 REST 서비스를 FeignClient 를 이용하여 호출하도록 한다.
-
-설치 서비스를 호출하기 위하여 Stub과 (FeignClient) 를 이용하여 Service 대행 인터페이스 (Proxy) 를 구현
-```
-# (ManagementCenter) InstallationService.java
-
-	package ipTVShopProject.external;
-
-
-	@FeignClient(name="Installation", url="http://Installation:8080")
-	public interface InstallationService {
-
-		@RequestMapping(method= RequestMethod.PATCH, path="/installations")
-		public void installationCancellation(@RequestBody Installation installation);
-
-	}
-```
-
-인터넷 가입 취소 요청(cancelRequest)을 받은 후, 처리하는 부분
-```
-# (Installation) InstallationController.java
-
-	package ipTVShopProject;
-
-	@RestController
-	public class InstallationController {
-	    @Autowired
-	    InstallationRepository installationRepository;
-
-	    @RequestMapping(method=RequestMethod.POST, path="/installations")
-	    public void installationCancellation(@RequestBody Installation installation) {
-
-		Installation installationCancel = installationRepository.findByOrderId(installation.getOrderId());
-		installationCancel.setStatus("INSTALLATIONCANCELED");
-		installationRepository.save(installationCancel);
-
-	    }
-	}
-```
-
-## 비동기식 호출 / 시간적 디커플링 / 장애격리 / 최종 (Eventual) 일관성 테스트
-
-가입 신청(order)이 이루어진 후에 서비스 관리센터(ManagementCenter) 서비스로 이를 알려주는 행위는 비동기식으로 처리하여, 서비스 관리센터(ManagementCenter) 서비스의 처리를 위하여 가입신청(order)이 블로킹 되지 않도록 처리한다.
- 
-- 이를 위하여 가입 신청에 기록을 남긴 후에 곧바로 가입 신청이 되었다는 도메인 이벤트를 카프카로 송출한다.(Publish)
-```
-# (order) order.java
-
-    @PostPersist
-    public void onPostPersist(){
-
-        if(this.getStatus().equals("JOINORDED")){
-            JoinOrdered joinOrdered = new JoinOrdered();
-            BeanUtils.copyProperties(this, joinOrdered);
-            joinOrdered.publishAfterCommit();
-        }
-    }
-```
-- 서비스 관리센터 서비스에서는 가입신청 이벤트에 대해서 이를 수신하여 자신의 정책을 처리하도록 PolicyHandler 를 구현한다.
-```
-# (ManagementCenter) PolicyHandler.java
-
-@Service
-public class PolicyHandler{
-    @Autowired
-    ManagementCenterRepository managementCenterRepository;
-
-    @StreamListener(KafkaProcessor.INPUT)
-    public void wheneverJoinOrdered_OrderRequest(@Payload JoinOrdered joinOrdered){
-
-        if(joinOrdered.isMe()){
-            ManagementCenter oa = new ManagementCenter();
-
-            oa.setOrderId(joinOrdered.getId());
-            oa.setInstallationAddress(joinOrdered.getInstallationAddress());
-            oa.setId(joinOrdered.getId());
-            oa.setStatus("JOINORDED");
-            oa.setEngineerName("Engineer" + joinOrdered.getId());
-            oa.setEngineerId(joinOrdered.getId() + 100);
-
-            managementCenterRepository.save(oa);
-        }
-    }
-}
-```
-가입신청은 서비스 관리센터와 완전히 분리되어 있으며, 이벤트 수신에 따라 처리되기 때문에, 서비스 관리센터 서비스가 유지보수로 인해 잠시 내려간 상태라도 가입신청을 받는데 문제가 없다.
-
-
-## CQRS
-
-가입신청 상태 조회를 위한 서비스를 CQRS 패턴으로 구현하였다.
-- order, ManagementCenter, Installation 개별 aggregate 통합 조회로 인한 성능 저하를 막을 수 있다.
-- 모든 정보는 비동기 방식으로 발행된 이벤트를 수신하여 처리된다.
-- 별도의 서비스(orderStatus), 저장소(AWS RDS-mySQL)로 구현하였다.
-- 설계 : MSAEz 설계의 view 매핑 설정 참조
-
-
-
-## API Gateway
-
-API Gateway를 통하여, 마이크로 서비스들의 진입점을 통일한다.
-
-```
-# application.yml 파일에 라우팅 경로 설정
-
 spring:
   profiles: docker
   cloud:
     gateway:
       routes:
-        - id: Order
-          uri: http://Order:8080
+        - id: concert
+          uri: http://concert:8080
           predicates:
-            - Path=/orders/** 
-        - id: ManagementCenter
-          uri: http://ManagementCenter:8080
+            - Path=/concerts/** 
+        - id: booking
+          uri: http://booking:8080
           predicates:
-            - Path=/managementCenters/** 
-        - id: Installation
-          uri: http://Installation:8080
+            - Path=/bookings/** 
+        - id: payment
+          uri: http://payment:8080
           predicates:
-            - Path=/installations/** 
-        - id: orderstatus
-          uri: http://orderstatus:8080
+            - Path=/payments/** 
+        - id: user
+          uri: http://user:8080
           predicates:
-            - Path=/orderStatuses/** 
-      globalcors:
-        corsConfigurations:
-          '[/**]':
-            allowedOrigins:
-              - "*"
-            allowedMethods:
-              - "*"
-            allowedHeaders:
-              - "*"
-            allowCredentials: true
-
-server:
-  port: 8080
+            - Path=/users/** 
+        - id: mypage
+          uri: http://mypage:8080
+          predicates:
+            - Path=/bookingHistories/**
 ```
 
-- EKS에 배포 시, MSA는 Service type을 ClusterIP(default)로 설정하여, 클러스터 내부에서만 호출 가능하도록 한다.
-- API Gateway는 Service type을 LoadBalancer로 설정하여 외부 호출에 대한 라우팅을 처리한다.
+
+## 폴리글랏 퍼시스턴스
+
+CQRS 를 위한 Mypage 서비스만 DB를 구분하여 적용함. 인메모리 DB인 hsqldb 사용.
 
 ```
-# buildspec.yml 설정
+<!-- 
+		<dependency>
+			<groupId>com.h2database</groupId>
+			<artifactId>h2</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+ -->
+		<dependency>
+		    <groupId>org.hsqldb</groupId>
+		    <artifactId>hsqldb</artifactId>
+		    <version>2.4.0</version>
+		    <scope>runtime</scope>
+		</dependency>
+```
 
-  cat <<EOF | kubectl apply -f -
-  apiVersion: v1
-  kind: Service
-  metadata:
-    name: $_PROJECT_NAME
-    labels:
-      app: $_PROJECT_NAME
-    spec:
-    ports:
-      - port: 8080
-        targetPort: 8080
-    selector:
-      app: $_PROJECT_NAME
-    type: LoadBalancer
-  EOF
+
+## 동기식 호출 과 Fallback 처리
+
+예약 > 결제 간의 호출은 동기식 일관성을 유지하는 트랜잭션으로 처리
+
+- FeignClient 서비스 구현
+
+```
+# PaymentService.java
+
+@FeignClient(name="payment", url="${feign.payment.url}", fallback = PaymentServiceFallback.class)
+public interface PaymentService {
+    @PostMapping(path="/payments")
+    public void requestPayment(Payment payment);
+}
+```
+
+
+- 동기식 호출
+
+```
+# Booking.java
+
+@PostPersist
+public void onPostPersist(){
+    BookingRequested bookingRequested = new BookingRequested();
+    BeanUtils.copyProperties(this, bookingRequested);
+    bookingRequested.setStatus(BookingStatus.BookingRequested.name());
+    bookingRequested.publishAfterCommit();
+
+    Payment payment = new Payment();
+    payment.setBookingId(this.id);
+
+    Application.applicationContext.getBean(PaymentService.class).requestPayment(payment);
+}
+```
+
+
+- Fallback 서비스 구현
+
+```
+# PaymentServiceFallback.java
+
+@Component
+public class PaymentServiceFallback implements PaymentService {
+
+	@Override
+	public void enroll(Payment payment) {
+		System.out.println("Circuit breaker has been opened. Fallback returned instead.");
+	}
+
+}
+```
+
+
+## 비동기식 호출 과 Fallback 처리
+
+- 비동기식 발신 구현
+
+```
+# Booking.java
+
+@PostUpdate
+public void onPostUpdate(){
+    if (BookingStatus.BookingApproved.name().equals(this.getStatus())) {
+        BookingApproved bookingApproved = new BookingApproved();
+        BeanUtils.copyProperties(this, bookingApproved);
+        bookingApproved.publishAfterCommit();
+    }
+}
+```
+
+- 비동기식 수신 구현
+
+```
+# PolicyHandler.java
+
+@StreamListener(KafkaProcessor.INPUT)
+public void paymentApproved(@Payload PaymentApproved paymentApproved){
+    if(paymentApproved.isMe()){
+	bookingRepository.findById(paymentApproved.getBookingId())
+	    .ifPresent(
+			booking -> {
+				booking.setStatus(BookingStatus.BookingApproved.name());;
+				bookingRepository.save(booking);
+		    }
+	    )
+	;
+    }
+}
 ```
 
 
@@ -548,213 +243,140 @@ server:
 
 ## CI/CD 설정
 
+- CodeBuild 기반으로 파이프라인 구성
 
-각 구현체들은 각자의 source repository 에 구성되었고, 사용한 CI/CD 플랫폼은 AWS CodeBuild를 사용하였으며, pipeline build script 는 각 프로젝트 폴더 이하에 buildspec.yml 에 포함되었다.
-아래 Github 소스 코드 변경 시, CodeBuild 빌드/배포가 자동 시작되도록 구성하였다.
-- https://github.com/ChaSang-geol/ipTVShopProject_gateway
-- https://github.com/ChaSang-geol/ipTVShopProject_Order
-- https://github.com/ChaSang-geol/ipTVShopProject_ManagementCenter
-- https://github.com/ChaSang-geol/ipTVShopProject_Installation
-- https://github.com/ChaSang-geol/ipTVShopProject_orderstatus
+<img src="https://user-images.githubusercontent.com/62231786/85087121-927ed900-b217-11ea-8f57-bbd4efc25997.JPG"/>
 
-## 동기식 호출 / 서킷 브레이킹 / 장애격리
+- Git Hook 연경
 
-* 서킷 브레이킹 프레임워크의 선택
-  - Spring FeignClient + Hystrix 옵션을 사용하여 구현할 경우, 도메인 로직과 부가 기능 로직이 서비스에 같이 구현된다.
-  - istio를 사용해서 서킷 브레이킹 적용이 가능하다.
+<img src="https://user-images.githubusercontent.com/62231786/85087123-93b00600-b217-11ea-90b3-4de01d03583a.JPG" />
 
-- 서비스를 istio로 배포(동기 호출하는 Request/Response 2개 서비스)
 
-```
-kubectl get deploy managementcenter -o yaml > managementcenter_deploy.yaml 
-kubectl apply -f <(istioctl kube-inject -f managementcenter_deploy.yaml) 
+## 서킷 브레이킹 / 장애격리
 
-kubectl get deploy installation -o yaml > installation_deploy.yaml 
-kubectl apply -f <(istioctl kube-inject -f installation_deploy.yaml) 
+* Spring FeignClient + Hystrix 구현
+* Booking 서비스 내 PaymentService FeignClient에 적용
+
+- Hystrix 설정
 
 ```
+# application.yml
 
-- istio 에서 서킷브레이커 설정(DestinationRule)
-```
-cat <<EOF | kubectl apply -f -
-apiVersion: networking.istio.io/v1alpha3
-kind: DestinationRule
-metadata:
-  name: installation
-spec:
-  host: installation
-  trafficPolicy:
-    connectionPool:
-      tcp:
-        maxConnections: 1           # 목적지로 가는 HTTP, TCP connection 최대 값. (Default 1024)
-      http:
-        http1MaxPendingRequests: 1  # 연결을 기다리는 request 수를 1개로 제한 (Default 
-        maxRequestsPerConnection: 1 # keep alive 기능 disable
-        maxRetries: 3               # 기다리는 동안 최대 재시도 수(Default 1024)
-    outlierDetection:
-      consecutiveErrors: 5          # 5xx 에러가 5번 발생하면
-      interval: 1s                  # 1초마다 스캔 하여
-      baseEjectionTime: 30s         # 30 초 동안 circuit breaking 처리   
-      maxEjectionPercent: 100       # 100% 로 차단
-EOF
+feign:
+  hystrix:
+    enabled: true
 
+hystrix:
+  command:
+    # 전역설정
+    default:
+      execution.isolation.thread.timeoutInMilliseconds: 610
 ```
 
-* 부하테스터 siege 툴을 통한 서킷 브레이커 동작을 확인한다.
-- 동시사용자 100명
-- 60초 동안 실시
+- 서비스 지연 설정
+
+```
+//circuit test
+try {
+    Thread.currentThread().sleep((long) (400 + Math.random() * 220));
+} catch (InterruptedException e) { }
+```
+
+- 부하 테스트 수행
+
+```
+$ siege -c100 -t60S -r10 --content-type "application/json" 'http://localhost:8082/bookings/ POST {"concertId":1, "userId":1, "qty":5}'
+```
+
+- 부하 테스트 결과
+
+```
+2020-06-19 01:54:52.576[0;39m [32mDEBUG[0;39m [35m6600[0;39m [2m---[0;39m [2m[container-0-C-1][0;39m [36mo.s.c.s.m.DirectWithAttributesChannel   [0;39m [2m:[0;39m preSend on channel 'event-in', message: GenericMessage [payload=byte[142], headers={kafka_offset=4013, scst_nativeHeadersPresent=true, kafka_consumer=org.apache.kafka.clients.consumer.KafkaConsumer@5775c5aa, deliveryAttempt=1, kafka_timestampType=CREATE_TIME, kafka_receivedMessageKey=null, kafka_receivedPartitionId=0, contentType=application/json, kafka_receivedTopic=sts, kafka_receivedTimestamp=1592499287785}]
+Circuit breaker has been opened. Fallback returned instead.
+Circuit breaker has been opened. Fallback returned instead.
+[2m2020-06-19 01:54:52.576[0;39m [32mDEBUG[0;39m [35m6600[0;39m [2m---[0;39m [2m[o-8082-exec-153][0;39m [36mo.s.c.s.m.DirectWithAttributesChannel   [0;39m [2m:[0;39m postSend (sent=true) on channel 'event-out', message: GenericMessage [payload=byte[142], headers={contentType=application/json, id=cbdf4d07-547d-5dbe-80a1-659a0e00b607, timestamp=1592499291969}]
+[2m2020-06-19 01:54:52.576[0;39m [32mDEBUG[0;39m [35m6600[0;39m [2m---[0;39m [2m[o-8082-exec-166][0;39m [36mo.s.c.s.m.DirectWithAttributesChannel   [0;39m [2m:[0;39m postSend (sent=true) on channel 'event-out', message: GenericMessage [payload=byte[142], headers={contentType=application/json, id=3a646994-497f-717a-cb13-443133007248, timestamp=1592499291969}]
+```
+
+```
+defaulting to time-based testing: 30 seconds
+
+{	"transactions":			         447,
+	"availability":			      100.00,
+	"elapsed_time":			       29.92,
+	"data_transferred":		        0.10,
+	"response_time":		        6.11,
+	"transaction_rate":		       14.94,
+	"throughput":			        0.00,
+	"concurrency":			       91.21,
+	"successful_transactions":	         447,
+	"failed_transactions":		           0,
+	"longest_transaction":		       17.07,
+	"shortest_transaction":		        0.00
+}
+```
 
 
 ### 오토스케일 아웃
 
-- 가입신청 서비스에 대한 replica 를 동적으로 늘려주도록 HPA 를 설정한다. 설정은 CPU 사용량이 1프로를 넘어서면 replica 를 10개까지 늘려준다.
-```
-kubectl autoscale deploy order --min=1 --max=10 --cpu-percent=1
-```
-
-- 오토스케일이 어떻게 되고 있는지 모니터링을 걸어준다.
-```
-kubectl get deploy order -w
-
-kubectl get hpa order -w
-```
-
-- 사용자 50명으로 워크로드를 3분 동안 걸어준다.
-```
-siege -c50 -t180S --content-type "application/json" 'http://a518c6481215d478b8b769aa034cdff4-46291629.us-east-2.elb.amazonaws.com:8080/orders POST {"productId": "2001", "productName": "internet", "installationAddress": "Seoul", "customerId": "1", "orderDate": "20200715", "status": "JOINORDED"}'
+- 현재 상태 확인
 
 ```
+  Namespace                   Name                        CPU Requests  CPU Limits  Memory Requests  Memory Limits  AGE
+  ---------                   ----                        ------------  ----------  ---------------  -------------  ---
+  default                     booking-7764c68d4b-27jrp    0 (0%)        0 (0%)      0 (0%)           0 (0%)         9h
+  default                     concert-6b54bd565c-grvnf    0 (0%)        0 (0%)      0 (0%)           0 (0%)         15h
+  default                     payment-684fd5785c-67ptn    0 (0%)        0 (0%)      0 (0%)           0 (0%)         9h
+  kafka                       my-kafka-0                  0 (0%)        0 (0%)      0 (0%)           0 (0%)         144m
+  kafka                       my-kafka-zookeeper-2        0 (0%)        0 (0%)      0 (0%)           0 (0%)         16h
+  kube-system                 aws-node-5rd64              10m (0%)      0 (0%)      0 (0%)           0 (0%)         16h
+  kube-system                 coredns-555b56bfbb-mj2pk    100m (5%)     0 (0%)      70Mi (2%)        170Mi (6%)     16h
+  kube-system                 kube-proxy-bmc2z            100m (5%)     0 (0%)      0 (0%)           0 (0%)         16h
+```
 
-- 오토스케일 발생하지 않음(siege 실행 결과 오류 없이 수행됨 : Availability 100%)
-- 서비스에 복잡한 비즈니스 로직이 포함된 것이 아니어서, CPU 부하를 주지 못한 것으로 추정된다.
+- 오토스케일 설정
+```
+kubectl autoscale deploy booking --min=1 --max=3 --cpu-percent=1
+```
+
+- 부하 수행
+
+```
+siege -c100 -t60S -r10 --content-type "application/json" 'http://aa8dc72fe9cbb4ba0ba62c5720326102-1685876144.ap-northeast-2.elb.amazonaws.com:8080/bookings/ POST {"concertId":1, "userId":1, "qty":5}' -v
+```
+
+- 모니터링
+
+```
+kubectl get deploy booking -w
+```
+
+- 스케일 아웃 확인
+
+```
+NAME      READY   UP-TO-DATE   AVAILABLE   AGE
+booking   1/1     1            1           5h9m
+```
+
+```
+defaulting to time-based testing: 60 seconds
+
+{	"transactions":			        6316,
+	"availability":			      100.00,
+	"elapsed_time":			       60.00,
+	"data_transferred":		        1.43,
+	"response_time":		        0.94,
+	"transaction_rate":		      105.27,
+	"throughput":			        0.02,
+	"concurrency":			       99.46,
+	"successful_transactions":	        6316,
+	"failed_transactions":		           0,
+	"longest_transaction":		        6.22,
+	"shortest_transaction":		        0.05
+}
+```
 
 
 ## 무정지 재배포
 
-* 먼저 무정지 재배포가 100% 되는 것인지 확인하기 위해서 Autoscaler 이나 CB 설정을 제거함
-
-- seige 로 배포작업 직전에 워크로드를 모니터링 한다.
-```
-siege -c30 -t150S --content-type "application/json" 'http://a518c6481215d478b8b769aa034cdff4-46291629.us-east-2.elb.amazonaws.com:8080/orders POST {"productId": "2001", "productName": "internet", "installationAddress": "Seoul", "customerId": "1", "orderDate": "20200715", "status": "JOINORDED"}'
-```
-
-- readinessProbe, livenessProbe 설정되지 않은 상태로 buildspec.yml을 수정한다.
-- Github에 buildspec.yml 수정 발생으로 CodeBuild 자동 빌드/배포 수행된다.
-- siege 수행 결과 : Availability가 100% 미만으로 떨어짐(79.06%) -> 컨테이너 배포는 되었지만 ready 되지 않은 상태에서 호출 유입됨
-![image](https://user-images.githubusercontent.com/56263370/87494646-80634f80-c68a-11ea-98ce-1779224ecfbf.png)
-
-- readinessProbe, livenessProbe 설정하고 buildspec.yml을 수정한다.
-- Github에 buildspec.yml 수정 발생으로 CodeBuild 자동 빌드/배포 수행된다.
-- siege 수행 결과 : Availability가 100%로 무정지 재배포 수행 확인할 수 있다.
-![image](https://user-images.githubusercontent.com/56263370/87494675-97a23d00-c68a-11ea-9ad2-a8859861ce9d.png)
-
-
-## ConfigMap 적용
-
-- 설정의 외부 주입을 통한 유연성을 제공하기 위해 ConfigMap을 적용한다.
-- orderstatus 에서 사용하는 mySQL(AWS RDS 활용) 접속 정보를 ConfigMap을 통해 주입 받는다.
-
-```
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: iptv
-data:
-  urlstatus: "jdbc:mysql://iptv.cgzkudckye4b.us-east-2.rds.amazonaws.com:3306/orderstatus?serverTimezone=UTC&useUnicode=true&characterEncoding=utf8"
-EOF
-```
-
-## Secret 적용
-
-- username, password와 같은 민감한 정보는 ConfigMap이 아닌 Secret을 적용한다.
-- etcd에 암호화 되어 저장되어, ConfigMap 보다 안전하다.
-- value는 base64 인코딩 된 값으로 지정한다. (echo root | base64)
-
-```
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: iptv
-type: Opaque
-data:
-  username: xxxxx <- 보안 상, 임의의 값으로 표시함 
-  password: xxxxx <- 보안 상, 임의의 값으로 표시함
-EOF
-```
-
-
-## 운영 모니터링
-
-### 쿠버네티스 구조
-쿠버네티스는 Master Node(Control Plane)와 Worker Node로 구성된다.
-
-![image](https://user-images.githubusercontent.com/64656963/86503139-09a29880-bde6-11ea-8706-1bba1f24d22d.png)
-
-
-### 1. Master Node(Control Plane) 모니터링
-Amazon EKS 제어 플레인 모니터링/로깅은 Amazon EKS 제어 플레인에서 계정의 CloudWatch Logs로 감사 및 진단 로그를 직접 제공한다.
-
-- 사용할 수 있는 클러스터 제어 플레인 로그 유형은 다음과 같다.
-```
-  - Kubernetes API 서버 컴포넌트 로그(api)
-  - 감사(audit) 
-  - 인증자(authenticator) 
-  - 컨트롤러 관리자(controllerManager)
-  - 스케줄러(scheduler)
-
-출처 : https://docs.aws.amazon.com/ko_kr/eks/latest/userguide/logging-monitoring.html
-```
-
-- 제어 플레인 로그 활성화 및 비활성화
-```
-기본적으로 클러스터 제어 플레인 로그는 CloudWatch Logs로 전송되지 않습니다. 
-클러스터에 대해 로그를 전송하려면 각 로그 유형을 개별적으로 활성화해야 합니다. 
-CloudWatch Logs 수집, 아카이브 스토리지 및 데이터 스캔 요금이 활성화된 제어 플레인 로그에 적용됩니다.
-
-출처 : https://docs.aws.amazon.com/ko_kr/eks/latest/userguide/control-plane-logs.html
-```
-
-### 2. Worker Node 모니터링
-
-- 쿠버네티스 모니터링 솔루션 중에 가장 인기 많은 것은 Heapster와 Prometheus 이다.
-- Heapster는 쿠버네티스에서 기본적으로 제공이 되며, 클러스터 내의 모니터링과 이벤트 데이터를 수집한다.
-- Prometheus는 CNCF에 의해 제공이 되며, 쿠버네티스의 각 다른 객체와 구성으로부터 리소스 사용을 수집할 수 있다.
-
-- 쿠버네티스에서 로그를 수집하는 가장 흔한 방법은 fluentd를 사용하는 Elasticsearch 이며, fluentd는 node에서 에이전트로 작동하며 커스텀 설정이 가능하다.
-
-- 그 외 오픈소스를 활용하여 Worker Node 모니터링이 가능하다. 아래는 istio, mixer, grafana, kiali를 사용한 예이다.
-
-```
-아래 내용 출처: https://bcho.tistory.com/1296?category=731548
-
-```
-- 마이크로 서비스에서 문제점중의 하나는 서비스가 많아 지면서 어떤 서비스가 어떤 서비스를 부르는지 의존성을 알기가 어렵고, 각 서비스를 개별적으로 모니터링 하기가 어렵다는 문제가 있다. Istio는 네트워크 트래픽을 모니터링함으로써, 서비스간에 호출 관계가 어떻게 되고, 서비스의 응답 시간, 처리량등의 다양한 지표를 수집하여 모니터링할 수 있다.
-
-![image](https://user-images.githubusercontent.com/64656963/86347967-ff738380-bc99-11ea-9b5e-6fb94dd4107a.png)
-
-- 서비스 A가 서비스 B를 호출할때 호출 트래픽은 각각의 envoy 프록시를 통하게 되고, 호출을 할때, 응답 시간과 서비스의 처리량이 Mixer로 전달된다. 전달된 각종 지표는 Mixer에 연결된 Logging Backend에 저장된다.
-
-- Mixer는 위의 그림과 같이 플러그인이 가능한 아답터 구조로, 운영하는 인프라에 맞춰서 로깅 및 모니터링 시스템을 손쉽게 변환이 가능하다.  쿠버네티스에서 많이 사용되는 Heapster나 Prometheus에서 부터 구글 클라우드의 StackDriver 그리고, 전문 모니터링 서비스인 Datadog 등으로 저장이 가능하다.
-
-![image](https://user-images.githubusercontent.com/64656963/86348023-14501700-bc9a-11ea-9759-a40679a6a61b.png)
-
-- 이렇게 저장된 지표들은 여러 시각화 도구를 이용해서 시각화 될 수 있는데, 아래 그림은 Grafana를 이용해서 서비스의 지표를 시각화 한 그림이다.
-
-![image](https://user-images.githubusercontent.com/64656963/86348092-25992380-bc9a-11ea-9d7b-8a7cdedc11fc.png)
-
-- 그리고 근래에 소개된 오픈소스 중에서 흥미로운 오픈 소스중의 하나가 Kiali (https://www.kiali.io/)라는 오픈소스인데, Istio에 의해서 수집된 각종 지표를 기반으로, 서비스간의 관계를 아래 그림과 같이 시각화하여 나타낼 수 있다.  아래는 그림이라서 움직이는 모습이 보이지 않지만 실제로 트래픽이 흘러가는 경로로 에니메이션을 이용하여 표현하고 있고, 서비스의 각종 지표, 처리량, 정상 여부, 응답 시간등을 손쉽게 표현해 준다.
-
-![image](https://user-images.githubusercontent.com/64656963/86348145-3a75b700-bc9a-11ea-8477-e7e7178c51fe.png)
-
-
-# 시연
- 1. 인터넷 가입신청 -> installation 접수 완료 상태
- 2. 설치 기사 설치 완료 처리 -> 가입 신청 완료 상태
- 3. 가입 취소
- 4. EDA 구현
-   - ManagementCenter 장애 상황에서 order(가입 신청) 정상 처리
-   - ManagementCenter 정상 전환 시 수신 받지 못한 이벤트 처리
- 5. 무정지 재배포
- 6. 오토 스케일링
+<img src="https://user-images.githubusercontent.com/62231786/85087355-497b5480-b218-11ea-804c-6e884f60c92f.JPG" />
